@@ -1,0 +1,482 @@
+---
+title: "SML Project"
+author: "Shubhang Periwal 19201104"
+date: "4/22/2020"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r}
+data <- read.csv("data_project_deepsolar.csv",header=TRUE)
+set.seed(19201104)
+library(randomForest)
+library(nnet)
+library(rpart)
+library(kernlab)
+library(ROCR)
+library(partykit)
+library(adabag)
+library(lattice)
+library(caret)
+library(doParallel)
+```
+
+```{r}
+size = nrow(data)
+keep <- sample(1:size,(size*0.7))
+test <- setdiff(1:size,keep)#30% for testing
+train <- sample(keep,(length(keep)*.80))
+val <- setdiff(keep,train)
+```
+
+
+```{r}
+data = data[,c(-79,-76)]#removing derived data
+```
+
+
+```{r}
+corr <- cor(data[train,3:79])
+corr[upper.tri(corr)] <- 0
+diag(corr)<- 0
+temp <- data[1:2]
+data <- data[,!apply(corr,2,function(x) any(x > .80))]
+dim(data)
+#removing highly related data 
+```
+
+```{r}
+data <- scale(data)#scaling data
+dim(data)
+```
+
+```{r}
+#computing pca to reduce dimensions, to improve algorithm accuracy
+pca <- prcomp(data[train,])
+prop <- cumsum(pca$sdev^2)/sum(pca$sdev^2)# compute cumulative proportion of variance
+Q <-length( prop[prop<0.95] ) #maintaining atleast 95% of information
+Q# only a handful is retained
+#more than 95 % data can be explained using 29 + 2 dimensions, so 
+#it is unnecessary to  have these many dimensions
+```
+```{r}
+xz_train <-pca$x[,1:Q]# extract first Q principal components
+dat_train <- data.frame(cbind(temp[train,],xz_train))#creating new data frame after reducing dimensions
+xz_test <- predict(pca,data[test,])[,1:Q]
+dat_test <- data.frame(cbind(temp[test,],xz_test))
+xz_val <- predict(pca,data[val,])[,1:Q]
+dat_val <- data.frame(cbind(temp[val,],xz_val))
+```
+
+```{r}
+data <- data.frame(cbind(temp),predict(pca,data)[,1:Q])
+```
+
+
+```{r}
+fit_glm <- glm(solar_system_count ~., data =  dat_train, family = "binomial")
+summary(fit_glm)
+predf <- predict.glm(fit_glm,newdata = dat_test,type = "response" )
+```
+
+```{r}
+y_test_hat <- ifelse(predf > 0.5,"low","high")
+table(temp[test,1],y_test_hat)
+
+predObj <- prediction(fitted(fit_glm),temp[train,1])
+perf <-performance(predObj,"tpr","fpr")
+plot(perf)
+abline(0,1,col ="darkorange2",lty =2)
+
+#compute area under roc curve
+auc <- performance(predObj,"auc")
+
+```
+
+
+
+```{r}
+auc@y.values
+sens <-performance(predObj,"sens")
+spec <-performance(predObj,"spec")
+tau <-sens@x.values[[1]]
+sensSpec <-sens@y.values[[1]]+spec@y.values[[1]]
+best <-which.max(sensSpec)
+plot(tau, sensSpec,type ="l")
+points(tau[best], sensSpec[best],pch =19,col=adjustcolor("darkorange2",0.5))
+tau[best]
+
+y_test_hat <- ifelse(predf>tau[best],1,0)
+table(temp[test,1],y_test_hat)
+```
+```{r}
+fitRf <- randomForest( solar_system_count ~ ., data = dat_train,maxit=300, trace=FALSE) # randomforest
+```
+
+
+```{r}
+#  Random Forest
+predValRf <- predict(fitRf, type = "class", newdata = dat_test)
+tabValRf <- table(dat_test$solar_system_count, predValRf)
+tabValRf
+accRf <- sum(diag(tabValRf))/sum(tabValRf)
+accRf
+```
+
+```{r}
+
+fitLog <- multinom(solar_system_count ~ ., data = dat_train,maxit=300, trace=FALSE)
+```
+
+```{r}
+# Multinomial Regression
+predValLog <- predict(fitLog, type = "class", newdata = dat_test)
+tabValLog <- table(dat_test$solar_system_count, predValLog)
+tabValLog
+accLog <- sum(diag(tabValLog))/sum(tabValLog)
+accLog
+```
+
+```{r}
+# classification tree
+
+fitRp <- rpart(solar_system_count ~ ., data = dat_train)
+```
+
+```{r}
+# classification tree
+predValRp <- predict(fitRp, type = "class", newdata = dat_test)
+tabValRp <- table(dat_test$solar_system_count, predValRp)
+tabValRp
+accRp <- sum(diag(tabValRp))/sum(tabValRp)
+accRp
+```
+
+```{r}
+#bagging
+fitBg <- bagging(solar_system_count ~ ., data = dat_train)
+```
+
+```{r}
+# bagging
+predValBg <- predict(fitBg, type = "class", newdata = dat_test)
+tabValBg <- table(dat_test$solar_system_count, predValBg$class)
+tabValBg
+accBg <- sum(diag(tabValBg))/sum(tabValBg)
+accBg
+```
+
+```{r}
+#boosting
+fitBst <- boosting(solar_system_count ~ ., data = dat_train, coeflearn = "Breiman", boos = FALSE)
+```
+
+```{r}
+# boosting
+predValBst <- predict(fitBst, type = "class", newdata = dat_test)
+tabValBst <- table(dat_test$solar_system_count, predValBst$class)
+tabValBst
+accBst <- sum(diag(tabValBst))/sum(tabValBst)
+accBst
+```
+
+
+```{r}
+#svm
+fitSvm <-ksvm(solar_system_count ~ ., data = dat_train)
+```
+
+```{r}
+#svm
+predValSvm <-predict(fitSvm,newdata =dat_test)
+tabValSvm <-table(dat_test$solar_system_count, predValSvm)
+tabValSvm
+accSvm <-sum(diag(tabValSvm))/sum(tabValSvm)
+accSvm
+```
+```{r}
+fin_res <- cbind(predValRf,predValSvm, predValBst$class,predf)
+for(i in 1:6221)
+{
+  if(fin_res[i,1]=="2")
+    fin_res[i,1] = "low"
+  if(fin_res[i,2]=="2")
+    fin_res[i,2] = "low"
+  if(fin_res[i,1]=="1")
+    fin_res[i,1] = "high"
+  if(fin_res[i,2]=="1")
+    fin_res[i,2] = "high"
+}
+
+res <- apply(fin_res,1,function(x){names(which.max(table(x)))})
+
+tabVal <- table(data[test,]$solar_system_count,res)
+tabVal
+accMax <- sum(diag(tabVal))/sum(tabVal)
+accMax
+```
+
+```{r}
+# replicate the process a number of times
+R <- 50
+out <- matrix(NA, R, 4)
+colnames(out) <- c("val_random_forest", "val_logistic", "best", "test")
+out <- as.data.frame(out)
+
+for ( r in 1:R ) {
+  
+  size = nrow(data)
+  keep <- sample(1:size,(size*0.7))
+  test <- setdiff(1:size,keep)#30% for testing
+  train <- sample(keep,(length(keep)*.80))
+  val <- setdiff(keep,train)
+  
+  # fit classifiers to only the training data
+ 
+  fitRf <- randomForest( solar_system_count ~ ., data = data[train,], trace=FALSE) #random forest
+  fitLog <- multinom(solar_system_count ~ ., data = data[train,], trace=FALSE) #multinomial
+  fitBg <- bagging(solar_system_count ~ ., data = data[train,])#bagging
+  fitSvm <-ksvm(solar_system_count ~ ., data = data[train,]) #SVM
+  fitBst <- boosting(solar_system_count ~ ., data = data[train,], coeflearn = "Breiman", boos = FALSE)#boosting
+  fitRp <- rpart(solar_system_count ~ ., data = data[train,]) #classification tree
+  
+  # classify the validation data observations
+  #  Random Forest
+  predValRf <- predict(fitRf, type = "class", newdata = data[val,])
+  tabValRf <- table(data[val,]$solar_system_count, predValRf)
+  #tabValRf
+  accRf <- sum(diag(tabValRf))/sum(tabValRf)
+  
+  # Multinomial Regression
+predValLog <- predict(fitLog, type = "class", newdata = data[val,])
+tabValLog <- table(data[val,]$solar_system_count, predValLog)
+#tabValLog
+accLog <- sum(diag(tabValLog))/sum(tabValLog)
+accLog
+  
+# classification tree
+predValRp <- predict(fitRp, type = "class", newdata = data[val,])
+tabValRp <- table(data[val,]$solar_system_count, predValRp)
+#tabValRp
+accRp <- sum(diag(tabValRp))/sum(tabValRp)
+accRp
+
+# boosting
+predValBst <- predict(fitBst, type = "class", newdata = data[val,])
+tabValBst <- table(data[val,]$solar_system_count, predValBst$class)
+#tabValBst
+accBst <- sum(diag(tabValBst))/sum(tabValBst)
+accBst
+
+# bagging
+predValBg <- predict(fitBg, type = "class", newdata = data[val,])
+tabValBg <- table(data[val,]$solar_system_count, predValBg$class)
+#tabValBg
+accBg <- sum(diag(tabValBg))/sum(tabValBg)
+accBg
+
+
+  #svm
+predValSvm <-predict(fitSvm,newdata =data[val,])
+tabValSvm <-table(data[val,]$solar_system_count, predValSvm)
+#tabValSvm
+accSvm <-sum(diag(tabValSvm))/sum(tabValSvm)
+accSvm
+  
+  
+  # accuracy
+  acc <- c(random_Forest = accRf, multinomial = accLog, classificationTree = accRp, Boosting = accBst, Bagging = accBg, SVM = accSvm)
+  out[r,1] <- accRf
+  out[r,2] <- accLog
+  out[r,3] <- accRp
+  out[r,4] <- accBst
+  out[r,5] <- accBg
+  out[r,6] <- accSvm
+  
+
+  # use the method that did best on the validation data 
+  # to predict the test data
+  best <- names( which.max(acc) )
+  switch(best,
+         multinomial = {
+           predTestLog <- predict(fitLog, type = "class", newdata = data[test,])
+           tabTestLog <- table(data[test,]$classes, predTestLog)
+           accBest <- sum(diag(tabTestLog))/sum(tabTestLog)
+         },
+         #  Random Forest
+  random_Forest = {       
+  predValRf <- predict(fitRf, type = "class", newdata = data[test,])
+  tabValRf <- table(data[test,]$solar_system_count, predValRf)
+  #tabValRf
+  accBest <- sum(diag(tabValRf))/sum(tabValRf)
+  },
+  # Multinomial Regression
+  multinomial = {
+    predValLog <- predict(fitLog, type = "class", newdata = data[test,])
+tabValLog <- table(data[test,]$solar_system_count, predValLog)
+#tabValLog
+accBest <- sum(diag(tabValLog))/sum(tabValLog)
+  },
+
+# classification tree
+classificationTree = {
+predValRp <- predict(fitRp, type = "class", newdata = data[test,])
+tabValRp <- table(data[test,]$solar_system_count, predValRp)
+#tabValRp
+accBest <- sum(diag(tabValRp))/sum(tabValRp)
+},
+
+# boosting
+Boosting = {
+predValBst <- predict(fitBst, type = "class", newdata = data[test,])
+tabValBst <- table(dat_test$solar_system_count, predValBst$class)
+#tabValBst
+accBest <- sum(diag(tabValBst))/sum(tabValBst)
+},
+
+
+# bagging
+Bagging = {
+predValBg <- predict(fitBg, type = "class", newdata = data[test,])
+tabValBg <- table(data[test,]$solar_system_count, predValBg$class)
+#tabValBg
+accBest <- sum(diag(tabValBg))/sum(tabValBg)
+},
+
+SVM = {
+  #svm
+predValSvm <-predict(fitSvm,newdata =data[test,])
+tabValSvm <-table(data[test,]$solar_system_count, predValSvm)
+#tabValSvm
+accBest <-sum(diag(tabValSvm))/sum(tabValSvm)
+
+}  
+  )
+  out[r,7] <- best
+  out[r,8] <- accBest
+  
+}
+```
+
+```{r}
+# check out the error rate summary statistics
+table(out[,7])
+tapply(out[,8], out[,7], summary)
+boxplot(out$test ~ out$best)
+stripchart(out$test ~ out$best, add = TRUE, vertical = TRUE,
+           method = "jitter", pch = 19, col = adjustcolor("magenta3", 0.2))
+
+#avg <- t( sapply(out[1:6], colMeans))
+avg <- out[,1:6]
+meanAcc <- colMeans(out[,1:6]) # estimated mean accuracy
+meanAcc
+sdAcc <- apply(avg, 2, sd)/sqrt(R) # estimated mean accuracy standard deviation
+sdAcc
+
+
+matplot(avg, type = "l", lty = c(2,3), col = c("darkorange2", "deepskyblue3","red","blue","green","yellow"),
+xlab = "Replications", ylab = "Accuracy")
+#
+# add confidence intervals
+bounds1 <- rep( c(meanAcc[1] - 2*sdAcc[1], meanAcc[1] + 2*sdAcc[1]), each = R )
+bounds2 <- rep( c(meanAcc[2] - 2*sdAcc[2], meanAcc[2] + 2*sdAcc[2]), each = R )
+bounds3 <- rep( c(meanAcc[3] - 2*sdAcc[3], meanAcc[3] + 2*sdAcc[3]), each = R )
+bounds4 <- rep( c(meanAcc[4] - 2*sdAcc[4], meanAcc[4] + 2*sdAcc[4]), each = R )
+bounds5 <- rep( c(meanAcc[5] - 2*sdAcc[5], meanAcc[5] + 2*sdAcc[5]), each = R )
+bounds6 <- rep( c(meanAcc[6] - 2*sdAcc[6], meanAcc[6] + 2*sdAcc[6]), each = R )
+polygon(c(1:R, R:1), bounds1, col = adjustcolor("darkorange2", 0.2), border = FALSE)
+polygon(c(1:R, R:1), bounds2, col = adjustcolor("deepskyblue3", 0.2), border = FALSE)
+polygon(c(1:R, R:1), bounds3, col = adjustcolor("red", 0.2), border = FALSE)
+polygon(c(1:R, R:1), bounds4, col = adjustcolor("blue", 0.2), border = FALSE)
+polygon(c(1:R, R:1), bounds5, col = adjustcolor("green", 0.2), border = FALSE)
+polygon(c(1:R, R:1), bounds6, col = adjustcolor("yellow", 0.2), border = FALSE)
+#
+# add estimated mean line
+abline(h = meanAcc, col = c("darkorange2", "deepskyblue3","red","blue","green","yellow"))
+#
+# add legend
+legend("bottomleft", fill = c("darkorange2", "deepskyblue3","red","blue","green","yellow"),
+legend = c("Random Forest", "Multinomial","Classification Tree","Boosting","Bagging","SVM"), bty = "n")
+
+
+
+```
+
+```{r}
+#Random Forest
+matplot(avg[1], type = "l", lty = c(2,3), col = c("darkorange2"),
+xlab = "Replications", ylab = "Accuracy")
+#
+# add estimated mean line
+abline(h = meanAcc[1], col = c("darkorange2"))
+#
+# add legend
+legend("bottomleft", fill = c("darkorange2"),
+legend = c("Random Forest"), bty = "n")
+
+
+
+#Multinomial
+matplot(avg[2], type = "l", lty = c(2,3), col = c("deepskyblue3"),
+xlab = "Replications", ylab = "Accuracy")
+
+# add estimated mean line
+abline(h = meanAcc[2], col = c("deepskyblue3"))
+#
+# add legend
+legend("bottomleft", fill = c("deepskyblue3"),
+legend = c("Multinomial"), bty = "n")
+
+
+
+#Classification tree
+matplot(avg[3], type = "l", lty = c(2,3), col = c("red"),
+xlab = "Replications", ylab = "Accuracy")
+
+# add estimated mean line
+abline(h = meanAcc[3], col = c("red"))
+#
+# add legend
+legend("bottomleft", fill = c("red"),
+legend = c("Classification Tree"), bty = "n")
+
+
+#Boosting
+matplot(avg[4], type = "l", lty = c(2,3), col = c("blue"),
+xlab = "Replications", ylab = "Accuracy")
+#
+# add estimated mean line
+abline(h = meanAcc[4], col = c("blue"))
+#
+# add legend
+legend("bottomleft", fill = c("blue"),
+legend = c("Boosting"), bty = "n")
+
+
+
+#Bagging 
+matplot(avg[5], type = "l", lty = c(2,3), col = c("green"),
+xlab = "Replications", ylab = "Accuracy")
+
+# add estimated mean line
+abline(h = meanAcc[5], col = c("green"))
+#
+# add legend
+legend("bottomleft", fill = c("green"),
+legend = c("Bagging"), bty = "n")
+
+
+
+#SVM
+matplot(avg[6], type = "l", lty = c(2,3), col = c("violet"),
+xlab = "Replications", ylab = "Accuracy")
+
+# add estimated mean line
+abline(h = meanAcc[6], col = c("violet"))
+#
+# add legend
+legend("bottomleft", fill = c("violet"),
+legend = c("SVM"), bty = "n")
+
+```
